@@ -2,13 +2,14 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
-import { createPublicClient, http, formatEther } from 'viem';
+import { createPublicClient, http, formatEther, encodeFunctionData } from 'viem';
 import { megaeth } from '@/lib/megaeth';
+import { OMEGAAIM_ABI } from '@/lib/contract';
 import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
 
-const BURN_ADDRESS = '0x0000000000000000000000000000000000000000' as `0x${string}`;
+const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000') as `0x${string}`;
 
 const publicClient = createPublicClient({
   chain: megaeth,
@@ -31,40 +32,56 @@ export default function GameWrapper() {
   const [gameReady, setGameReady] = useState(false);
   const [balance, setBalance] = useState<bigint>(BigInt(0));
   const [needsFunding, setNeedsFunding] = useState(false);
+  const [onChainStats, setOnChainStats] = useState({ totalShots: 0, hits: 0, bestStreak: 0 });
   const txQueue = useRef<Promise<void>>(Promise.resolve());
 
-  // Wait for wallets to be ready, then check balance
+  // Check balance and load on-chain stats
   useEffect(() => {
     if (!authenticated || !walletsReady || wallets.length === 0) {
       setGameReady(false);
       return;
     }
 
-    const checkBalance = async () => {
+    const addr = wallets[0].address as `0x${string}`;
+
+    const refresh = async () => {
       try {
-        const bal = await publicClient.getBalance({
-          address: wallets[0].address as `0x${string}`,
-        });
+        const bal = await publicClient.getBalance({ address: addr });
         setBalance(bal);
-        if (bal === BigInt(0)) {
-          setNeedsFunding(true);
-        } else {
-          setNeedsFunding(false);
-        }
-        setGameReady(true);
+        setNeedsFunding(bal === BigInt(0));
       } catch (err) {
         console.error('Balance check error:', err);
-        setGameReady(true);
       }
+
+      // Load on-chain stats
+      if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
+        try {
+          const result = await publicClient.readContract({
+            address: CONTRACT_ADDRESS,
+            abi: OMEGAAIM_ABI,
+            functionName: 'getPlayerStats',
+            args: [addr],
+          });
+          const [totalShots, hits, bestStreak] = result as [bigint, bigint, bigint, bigint, bigint];
+          setOnChainStats({
+            totalShots: Number(totalShots),
+            hits: Number(hits),
+            bestStreak: Number(bestStreak),
+          });
+        } catch {
+          // Contract not deployed yet or read error
+        }
+      }
+
+      setGameReady(true);
     };
 
-    checkBalance();
-    // Refresh balance every 10 seconds
-    const interval = setInterval(checkBalance, 10000);
+    refresh();
+    const interval = setInterval(refresh, 10000);
     return () => clearInterval(interval);
   }, [authenticated, walletsReady, wallets]);
 
-  const sendShotTx = useCallback(async () => {
+  const sendShotTx = useCallback(async (hit: boolean) => {
     const wallet = wallets[0];
     if (!wallet) return;
 
@@ -74,20 +91,27 @@ export default function GameWrapper() {
         address: wallet.address as `0x${string}`,
       });
       setBalance(bal);
-
       if (bal === BigInt(0)) {
         setNeedsFunding(true);
         setError('No ETH for gas. Fund your wallet to play.');
         return;
       }
     } catch {
-      // If balance check fails, try sending anyway
+      // Continue anyway
     }
 
     try {
+      // Encode shoot(bool _hit) call
+      const data = encodeFunctionData({
+        abi: OMEGAAIM_ABI,
+        functionName: 'shoot',
+        args: [hit],
+      });
+
       const receipt = await sendTransaction(
         {
-          to: BURN_ADDRESS,
+          to: CONTRACT_ADDRESS,
+          data,
           value: 0,
           chainId: 4326,
         },
@@ -114,11 +138,11 @@ export default function GameWrapper() {
   }, [wallets, sendTransaction]);
 
   const handleShoot = useCallback(
-    (_hit: boolean) => {
+    (hit: boolean) => {
       if (!gameReady || needsFunding) return;
       setIsPending(true);
       txQueue.current = txQueue.current
-        .then(() => sendShotTx())
+        .then(() => sendShotTx(hit))
         .finally(() => setIsPending(false));
     },
     [gameReady, needsFunding, sendShotTx]
@@ -206,8 +230,13 @@ export default function GameWrapper() {
           <span className="text-gray-500 font-mono text-xs">
             {formatEther(balance).slice(0, 8)} ETH
           </span>
+          {onChainStats.totalShots > 0 && (
+            <span className="text-purple-400 font-mono text-xs">
+              ON-CHAIN: {onChainStats.totalShots} shots / {onChainStats.hits} hits / best {onChainStats.bestStreak} streak
+            </span>
+          )}
           <span className="text-green-400 font-mono text-xs">
-            ON-CHAIN SHOTS: {txCount}
+            SESSION SHOTS: {txCount}
           </span>
           <button
             onClick={logout}
@@ -257,16 +286,31 @@ export default function GameWrapper() {
         </div>
       )}
 
-      {lastTxHash && (
-        <div className="fixed bottom-4 left-4 z-40 font-mono text-xs">
-          <a
-            href={`https://megaeth.blockscout.com/tx/${lastTxHash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-green-600 hover:text-green-400 underline"
-          >
-            LAST TX: {lastTxHash.slice(0, 10)}...{lastTxHash.slice(-6)}
-          </a>
+      {/* Contract address */}
+      {CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000' && (
+        <div className="fixed bottom-4 left-4 z-40 font-mono text-xs space-y-1">
+          <div>
+            <a
+              href={`https://megaeth.blockscout.com/address/${CONTRACT_ADDRESS}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-purple-600 hover:text-purple-400 underline"
+            >
+              CONTRACT: {CONTRACT_ADDRESS.slice(0, 10)}...{CONTRACT_ADDRESS.slice(-6)}
+            </a>
+          </div>
+          {lastTxHash && (
+            <div>
+              <a
+                href={`https://megaeth.blockscout.com/tx/${lastTxHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-green-600 hover:text-green-400 underline"
+              >
+                LAST TX: {lastTxHash.slice(0, 10)}...{lastTxHash.slice(-6)}
+              </a>
+            </div>
+          )}
         </div>
       )}
 
@@ -276,7 +320,6 @@ export default function GameWrapper() {
         </div>
       )}
 
-      {/* TX Pending */}
       {isPending && (
         <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded bg-yellow-900/80 px-3 py-2 font-mono text-xs text-yellow-300">
           <div className="h-2 w-2 animate-pulse rounded-full bg-yellow-400" />
