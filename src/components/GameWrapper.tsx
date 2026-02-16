@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { usePrivy, useWallets } from '@privy-io/react-auth';
+import { usePrivy, useLoginWithOAuth, useWallets } from '@privy-io/react-auth';
 import { createWalletClient, custom, parseEther } from 'viem';
 import { megaeth } from '@/lib/megaeth';
 import dynamic from 'next/dynamic';
@@ -12,7 +12,8 @@ const Game = dynamic(() => import('./Game'), { ssr: false });
 const BURN_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 
 export default function GameWrapper() {
-  const { ready, authenticated, login, logout, user } = usePrivy();
+  const { ready, authenticated, logout, user } = usePrivy();
+  const { initOAuth } = useLoginWithOAuth();
   const { wallets } = useWallets();
   const [isPending, setIsPending] = useState(false);
   const [txCount, setTxCount] = useState(0);
@@ -88,7 +89,7 @@ export default function GameWrapper() {
         </div>
 
         <button
-          onClick={login}
+          onClick={() => initOAuth({ provider: 'twitter' })}
           className="group relative overflow-hidden rounded border border-green-500 bg-black px-8 py-3 font-mono text-green-400 transition-all hover:bg-green-500 hover:text-black"
         >
           <span className="relative z-10 flex items-center gap-2">
