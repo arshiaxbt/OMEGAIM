@@ -1,5 +1,10 @@
+import ErrorBoundary from "@/components/ErrorBoundary";
 import GameWrapper from "@/components/GameWrapper";
 
 export default function Home() {
-  return <GameWrapper />;
+  return (
+    <ErrorBoundary>
+      <GameWrapper />
+    </ErrorBoundary>
+  );
 }

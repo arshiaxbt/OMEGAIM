@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePrivy, useLogin, useWallets } from '@privy-io/react-auth';
 import { createWalletClient, custom, parseEther } from 'viem';
 import { megaeth } from '@/lib/megaeth';
@@ -8,18 +8,31 @@ import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
 
-// Burn address for shot transactions
 const BURN_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 
 export default function GameWrapper() {
   const { ready, authenticated, logout, user } = usePrivy();
-  const { login } = useLogin();
-  const { wallets } = useWallets();
+  const { login } = useLogin({
+    onError: (err) => {
+      console.error('Login error:', err);
+    },
+  });
+  const { wallets, ready: walletsReady } = useWallets();
   const [isPending, setIsPending] = useState(false);
   const [txCount, setTxCount] = useState(0);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gameReady, setGameReady] = useState(false);
   const txQueue = useRef<Promise<void>>(Promise.resolve());
+
+  // Wait for wallets to be ready before showing game
+  useEffect(() => {
+    if (authenticated && walletsReady && wallets.length > 0) {
+      setGameReady(true);
+    } else {
+      setGameReady(false);
+    }
+  }, [authenticated, walletsReady, wallets]);
 
   const sendShotTx = useCallback(async () => {
     const wallet = wallets[0];
@@ -53,14 +66,13 @@ export default function GameWrapper() {
 
   const handleShoot = useCallback(
     (_hit: boolean) => {
-      if (!authenticated || wallets.length === 0) return;
+      if (!gameReady) return;
       setIsPending(true);
-      // Queue transactions so they don't overlap
       txQueue.current = txQueue.current
         .then(() => sendShotTx())
         .finally(() => setIsPending(false));
     },
-    [authenticated, wallets, sendShotTx]
+    [gameReady, sendShotTx]
   );
 
   if (!ready) {
@@ -110,11 +122,26 @@ export default function GameWrapper() {
     );
   }
 
+  // Authenticated but wallet not ready yet
+  if (!gameReady) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-black">
+        <div className="text-center">
+          <div className="text-green-400 font-mono text-xl animate-pulse mb-4">
+            SETTING UP WALLET...
+          </div>
+          <p className="text-gray-500 font-mono text-xs">
+            Creating your embedded wallet on MegaETH
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const twitterHandle = user?.twitter?.username;
 
   return (
     <div className="relative">
-      {/* Top bar with user info */}
       <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between bg-black/60 backdrop-blur px-4 py-2 border-b border-green-900/50">
         <div className="flex items-center gap-3">
           <span className="text-green-400 font-mono text-sm font-bold">
@@ -139,7 +166,6 @@ export default function GameWrapper() {
         </div>
       </div>
 
-      {/* Last TX hash */}
       {lastTxHash && (
         <div className="fixed bottom-4 left-4 z-40 font-mono text-xs">
           <a
@@ -153,7 +179,6 @@ export default function GameWrapper() {
         </div>
       )}
 
-      {/* Error */}
       {error && (
         <div className="fixed bottom-12 left-4 z-40 rounded bg-red-900/80 px-3 py-1 font-mono text-xs text-red-300 max-w-md truncate">
           {error}
