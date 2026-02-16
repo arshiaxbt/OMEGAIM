@@ -2,11 +2,18 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
+import { createPublicClient, http, formatEther } from 'viem';
+import { megaeth } from '@/lib/megaeth';
 import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
 
-const BURN_ADDRESS = '0x0000000000000000000000000000000000000000';
+const BURN_ADDRESS = '0x0000000000000000000000000000000000000000' as `0x${string}`;
+
+const publicClient = createPublicClient({
+  chain: megaeth,
+  transport: http(),
+});
 
 export default function GameWrapper() {
   const { ready, authenticated, logout, user } = usePrivy();
@@ -22,29 +29,70 @@ export default function GameWrapper() {
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameReady, setGameReady] = useState(false);
+  const [balance, setBalance] = useState<bigint>(BigInt(0));
+  const [needsFunding, setNeedsFunding] = useState(false);
   const txQueue = useRef<Promise<void>>(Promise.resolve());
 
-  // Wait for wallets to be ready before showing game
+  // Wait for wallets to be ready, then check balance
   useEffect(() => {
-    if (authenticated && walletsReady && wallets.length > 0) {
-      setGameReady(true);
-    } else {
+    if (!authenticated || !walletsReady || wallets.length === 0) {
       setGameReady(false);
+      return;
     }
+
+    const checkBalance = async () => {
+      try {
+        const bal = await publicClient.getBalance({
+          address: wallets[0].address as `0x${string}`,
+        });
+        setBalance(bal);
+        if (bal === BigInt(0)) {
+          setNeedsFunding(true);
+        } else {
+          setNeedsFunding(false);
+        }
+        setGameReady(true);
+      } catch (err) {
+        console.error('Balance check error:', err);
+        setGameReady(true);
+      }
+    };
+
+    checkBalance();
+    // Refresh balance every 10 seconds
+    const interval = setInterval(checkBalance, 10000);
+    return () => clearInterval(interval);
   }, [authenticated, walletsReady, wallets]);
 
   const sendShotTx = useCallback(async () => {
-    if (!wallets[0]) return;
+    const wallet = wallets[0];
+    if (!wallet) return;
+
+    // Check balance before sending
+    try {
+      const bal = await publicClient.getBalance({
+        address: wallet.address as `0x${string}`,
+      });
+      setBalance(bal);
+
+      if (bal === BigInt(0)) {
+        setNeedsFunding(true);
+        setError('No ETH for gas. Fund your wallet to play.');
+        return;
+      }
+    } catch {
+      // If balance check fails, try sending anyway
+    }
 
     try {
       const receipt = await sendTransaction(
         {
-          to: BURN_ADDRESS as `0x${string}`,
+          to: BURN_ADDRESS,
           value: 0,
           chainId: 4326,
         },
         {
-          address: wallets[0].address,
+          address: wallet.address,
           uiOptions: { showWalletUIs: false },
         }
       );
@@ -52,22 +100,28 @@ export default function GameWrapper() {
       setLastTxHash(receipt.hash);
       setTxCount((c) => c + 1);
       setError(null);
+      setNeedsFunding(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Transaction failed';
-      setError(message);
+      if (message.toLowerCase().includes('insufficient') || message.toLowerCase().includes('fund')) {
+        setNeedsFunding(true);
+        setError('Not enough ETH for gas. Fund your wallet.');
+      } else {
+        setError(message);
+      }
       console.error('Shot TX failed:', err);
     }
   }, [wallets, sendTransaction]);
 
   const handleShoot = useCallback(
     (_hit: boolean) => {
-      if (!gameReady) return;
+      if (!gameReady || needsFunding) return;
       setIsPending(true);
       txQueue.current = txQueue.current
         .then(() => sendShotTx())
         .finally(() => setIsPending(false));
     },
-    [gameReady, sendShotTx]
+    [gameReady, needsFunding, sendShotTx]
   );
 
   if (!ready) {
@@ -133,6 +187,7 @@ export default function GameWrapper() {
   }
 
   const twitterHandle = user?.twitter?.username;
+  const walletAddress = wallets[0]?.address;
 
   return (
     <div className="relative">
@@ -148,6 +203,9 @@ export default function GameWrapper() {
           )}
         </div>
         <div className="flex items-center gap-4">
+          <span className="text-gray-500 font-mono text-xs">
+            {formatEther(balance).slice(0, 8)} ETH
+          </span>
           <span className="text-green-400 font-mono text-xs">
             ON-CHAIN SHOTS: {txCount}
           </span>
@@ -159,6 +217,45 @@ export default function GameWrapper() {
           </button>
         </div>
       </div>
+
+      {/* Needs funding overlay */}
+      {needsFunding && walletAddress && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90">
+          <div className="max-w-md text-center space-y-4 p-8">
+            <div className="text-red-400 font-mono text-xl">NO GAS</div>
+            <p className="text-gray-400 font-mono text-sm">
+              You need ETH on MegaETH to play. Send ETH to your wallet:
+            </p>
+            <div className="bg-gray-900 border border-gray-700 rounded p-3 break-all">
+              <p className="text-green-400 font-mono text-xs">{walletAddress}</p>
+            </div>
+            <button
+              onClick={() => navigator.clipboard.writeText(walletAddress)}
+              className="rounded border border-green-500 px-4 py-2 font-mono text-xs text-green-400 hover:bg-green-500 hover:text-black"
+            >
+              COPY ADDRESS
+            </button>
+            <p className="text-gray-600 font-mono text-xs">
+              Bridge ETH from Ethereum mainnet to MegaETH via{' '}
+              <a
+                href="https://megaeth.blockscout.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-green-600 underline"
+              >
+                bridge
+              </a>
+              {' '}or send from another MegaETH wallet.
+            </p>
+            <button
+              onClick={() => setNeedsFunding(false)}
+              className="text-gray-600 font-mono text-xs underline hover:text-gray-400"
+            >
+              DISMISS & PLAY ANYWAY
+            </button>
+          </div>
+        </div>
+      )}
 
       {lastTxHash && (
         <div className="fixed bottom-4 left-4 z-40 font-mono text-xs">
@@ -173,9 +270,17 @@ export default function GameWrapper() {
         </div>
       )}
 
-      {error && (
+      {error && !needsFunding && (
         <div className="fixed bottom-12 left-4 z-40 rounded bg-red-900/80 px-3 py-1 font-mono text-xs text-red-300 max-w-md truncate">
           {error}
+        </div>
+      )}
+
+      {/* TX Pending */}
+      {isPending && (
+        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded bg-yellow-900/80 px-3 py-2 font-mono text-xs text-yellow-300">
+          <div className="h-2 w-2 animate-pulse rounded-full bg-yellow-400" />
+          TX PENDING ON MEGAETH...
         </div>
       )}
 
