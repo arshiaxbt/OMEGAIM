@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
 import { createPublicClient, http, formatEther, encodeFunctionData } from 'viem';
 import { megaeth } from '@/lib/megaeth';
@@ -16,6 +16,12 @@ const publicClient = createPublicClient({
   transport: http(),
 });
 
+interface TxEntry {
+  id: number;
+  status: 'pending' | 'done' | 'fail';
+  hash?: string;
+}
+
 export default function GameWrapper() {
   const { ready, authenticated, logout, user } = usePrivy();
   const { login } = useLogin({
@@ -25,14 +31,26 @@ export default function GameWrapper() {
   });
   const { wallets, ready: walletsReady } = useWallets();
   const { sendTransaction } = useSendTransaction();
-  const [pendingCount, setPendingCount] = useState(0);
+  const [txList, setTxList] = useState<TxEntry[]>([]);
+  const txIdCounter = useRef(0);
   const [txCount, setTxCount] = useState(0);
-  const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameReady, setGameReady] = useState(false);
   const [balance, setBalance] = useState<bigint>(BigInt(0));
   const [needsFunding, setNeedsFunding] = useState(false);
   const [onChainStats, setOnChainStats] = useState({ totalShots: 0, hits: 0, bestStreak: 0 });
+
+  // Auto-remove completed/failed txs after 3s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTxList(prev => {
+        const now = Date.now();
+        // Keep pending ones, and done/fail ones for 3 seconds
+        return prev.filter(tx => tx.status === 'pending' || tx.id > now - 3000);
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Check balance and load on-chain stats
   useEffect(() => {
@@ -52,7 +70,6 @@ export default function GameWrapper() {
         console.error('Balance check error:', err);
       }
 
-      // Load on-chain stats
       if (CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
         try {
           const result = await publicClient.readContract({
@@ -68,7 +85,7 @@ export default function GameWrapper() {
             bestStreak: Number(bestStreak),
           });
         } catch {
-          // Contract not deployed yet or read error
+          // Contract read error
         }
       }
 
@@ -84,7 +101,12 @@ export default function GameWrapper() {
     const wallet = wallets[0];
     if (!wallet) return;
 
-    // Check balance before sending
+    const txId = Date.now() + txIdCounter.current++;
+
+    // Add pending TX to list
+    setTxList(prev => [...prev.slice(-9), { id: txId, status: 'pending' }]);
+
+    // Check balance
     try {
       const bal = await publicClient.getBalance({
         address: wallet.address as `0x${string}`,
@@ -92,7 +114,7 @@ export default function GameWrapper() {
       setBalance(bal);
       if (bal === BigInt(0)) {
         setNeedsFunding(true);
-        setError('No ETH for gas. Fund your wallet to play.');
+        setTxList(prev => prev.map(tx => tx.id === txId ? { ...tx, status: 'fail' } : tx));
         return;
       }
     } catch {
@@ -110,7 +132,6 @@ export default function GameWrapper() {
         {
           to: CONTRACT_ADDRESS,
           data,
-          value: 0,
           chainId: 4326,
         },
         {
@@ -119,18 +140,17 @@ export default function GameWrapper() {
         }
       );
 
-      setLastTxHash(receipt.hash);
-      setTxCount((c) => c + 1);
+      setTxList(prev => prev.map(tx => tx.id === txId ? { ...tx, status: 'done', hash: receipt.hash } : tx));
+      setTxCount(c => c + 1);
       setError(null);
       setNeedsFunding(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Transaction failed';
+      setTxList(prev => prev.map(tx => tx.id === txId ? { ...tx, status: 'fail' } : tx));
       if (message.toLowerCase().includes('insufficient') || message.toLowerCase().includes('fund')) {
         setNeedsFunding(true);
-        setError('Not enough ETH for gas. Fund your wallet.');
-      } else {
-        setError(message);
       }
+      setError(message);
       console.error('Shot TX failed:', err);
     }
   }, [wallets, sendTransaction]);
@@ -138,9 +158,7 @@ export default function GameWrapper() {
   const handleShoot = useCallback(
     (hit: boolean) => {
       if (!gameReady || needsFunding) return;
-      // Fire-and-forget: each shot sends independently
-      setPendingCount((c) => c + 1);
-      sendShotTx(hit).finally(() => setPendingCount((c) => c - 1));
+      sendShotTx(hit);
     },
     [gameReady, needsFunding, sendShotTx]
   );
@@ -212,16 +230,12 @@ export default function GameWrapper() {
 
   return (
     <div className="relative">
-      {/* Top bar - minimal */}
+      {/* Top bar */}
       <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between bg-[#090b0f]/70 backdrop-blur-sm px-4 py-2 border-b border-[#1a1e2a]">
         <div className="flex items-center gap-3">
-          <span className="text-white font-mono text-sm font-bold tracking-wider">
-            OMEGAIM
-          </span>
+          <span className="text-white font-mono text-sm font-bold tracking-wider">OMEGAIM</span>
           {twitterHandle && (
-            <span className="text-[#4a5070] font-mono text-xs">
-              @{twitterHandle}
-            </span>
+            <span className="text-[#4a5070] font-mono text-xs">@{twitterHandle}</span>
           )}
         </div>
         <div className="flex items-center gap-4">
@@ -230,12 +244,10 @@ export default function GameWrapper() {
           </span>
           {onChainStats.totalShots > 0 && (
             <span className="text-[#6a5aaa] font-mono text-xs">
-              {onChainStats.totalShots} / {onChainStats.hits} / {onChainStats.bestStreak}
+              {onChainStats.totalShots}/{onChainStats.hits}/{onChainStats.bestStreak}
             </span>
           )}
-          <span className="text-[#4a5070] font-mono text-xs">
-            TXs: {txCount}
-          </span>
+          <span className="text-[#4a5070] font-mono text-xs">TXs: {txCount}</span>
           <button
             onClick={logout}
             className="rounded border border-[#2a1a1a] px-3 py-1 font-mono text-xs text-[#aa4444] hover:bg-[#1a0a0a]"
@@ -245,13 +257,13 @@ export default function GameWrapper() {
         </div>
       </div>
 
-      {/* Needs funding overlay */}
+      {/* Needs funding */}
       {needsFunding && walletAddress && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#090b0f]/95">
           <div className="max-w-md text-center space-y-4 p-8 border border-[#1a1e2a] rounded bg-[#0d1017]">
             <div className="text-[#ff6040] font-mono text-xl">NO GAS</div>
             <p className="text-[#6a7090] font-mono text-sm">
-              You need ETH on MegaETH to play. Send ETH to your wallet:
+              Send ETH on MegaETH to your wallet:
             </p>
             <div className="bg-[#090b0f] border border-[#1a1e2a] rounded p-3 break-all">
               <p className="text-[#3c82ff] font-mono text-xs">{walletAddress}</p>
@@ -262,14 +274,11 @@ export default function GameWrapper() {
             >
               COPY ADDRESS
             </button>
-            <p className="text-[#3a3e50] font-mono text-xs">
-              Bridge ETH from Ethereum mainnet to MegaETH or send from another wallet.
-            </p>
             <button
               onClick={() => setNeedsFunding(false)}
-              className="text-[#4a5070] font-mono text-xs underline hover:text-[#6a7090]"
+              className="block mx-auto text-[#4a5070] font-mono text-xs underline hover:text-[#6a7090]"
             >
-              DISMISS & PLAY ANYWAY
+              DISMISS
             </button>
           </div>
         </div>
@@ -277,46 +286,25 @@ export default function GameWrapper() {
 
       {/* Contract link */}
       {CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000' && (
-        <div className="fixed bottom-4 left-4 z-40 font-mono text-xs space-y-1">
-          <div>
-            <a
-              href={`https://megaeth.blockscout.com/address/${CONTRACT_ADDRESS}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[#2a3050] hover:text-[#3c82ff] transition-colors"
-            >
-              {CONTRACT_ADDRESS.slice(0, 8)}...{CONTRACT_ADDRESS.slice(-4)}
-            </a>
-          </div>
-          {lastTxHash && (
-            <div>
-              <a
-                href={`https://megaeth.blockscout.com/tx/${lastTxHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#2a3050] hover:text-[#ff8020] transition-colors"
-              >
-                tx: {lastTxHash.slice(0, 8)}...{lastTxHash.slice(-4)}
-              </a>
-            </div>
-          )}
+        <div className="fixed bottom-4 left-4 z-40 font-mono text-xs">
+          <a
+            href={`https://megaeth.blockscout.com/address/${CONTRACT_ADDRESS}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#2a3050] hover:text-[#3c82ff] transition-colors"
+          >
+            {CONTRACT_ADDRESS.slice(0, 8)}...{CONTRACT_ADDRESS.slice(-4)}
+          </a>
         </div>
       )}
 
       {error && !needsFunding && (
-        <div className="fixed bottom-12 left-4 z-40 rounded bg-[#1a0a0a]/80 border border-[#aa4444]/20 px-3 py-1 font-mono text-xs text-[#aa4444] max-w-md truncate">
+        <div className="fixed bottom-10 left-4 z-40 rounded bg-[#1a0a0a]/80 border border-[#aa4444]/20 px-3 py-1 font-mono text-xs text-[#aa4444] max-w-md truncate">
           {error}
         </div>
       )}
 
-      {pendingCount > 0 && (
-        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded bg-[#0d1020]/80 border border-[#ff8020]/20 px-3 py-1.5 font-mono text-xs text-[#ff8020]">
-          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#ff8020]" />
-          {pendingCount} TX{pendingCount > 1 ? 's' : ''}
-        </div>
-      )}
-
-      <Game onShoot={handleShoot} isPending={pendingCount > 0} />
+      <Game onShoot={handleShoot} txList={txList} />
     </div>
   );
 }
