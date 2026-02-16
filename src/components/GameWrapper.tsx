@@ -1,13 +1,12 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { usePrivy, useLogin, useWallets } from '@privy-io/react-auth';
+import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
 import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
 
 const BURN_ADDRESS = '0x0000000000000000000000000000000000000000';
-const MEGAETH_CHAIN_ID = '0x10e6'; // 4326
 
 export default function GameWrapper() {
   const { ready, authenticated, logout, user } = usePrivy();
@@ -17,79 +16,40 @@ export default function GameWrapper() {
     },
   });
   const { wallets, ready: walletsReady } = useWallets();
+  const { sendTransaction } = useSendTransaction();
   const [isPending, setIsPending] = useState(false);
   const [txCount, setTxCount] = useState(0);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameReady, setGameReady] = useState(false);
   const txQueue = useRef<Promise<void>>(Promise.resolve());
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const providerRef = useRef<any>(null);
-  const addressRef = useRef<string | null>(null);
 
-  // Initialize provider and switch chain once wallet is ready
+  // Wait for wallets to be ready before showing game
   useEffect(() => {
-    if (!authenticated || !walletsReady || wallets.length === 0) {
+    if (authenticated && walletsReady && wallets.length > 0) {
+      setGameReady(true);
+    } else {
       setGameReady(false);
-      return;
     }
-
-    const init = async () => {
-      try {
-        const wallet = wallets[0];
-        const provider = await wallet.getEthereumProvider();
-
-        // Switch to MegaETH chain
-        try {
-          await provider.request({
-            method: 'wallet_switchEthereumChain',
-            params: [{ chainId: MEGAETH_CHAIN_ID }],
-          });
-        } catch {
-          // Chain not added, add it
-          await provider.request({
-            method: 'wallet_addEthereumChain',
-            params: [{
-              chainId: MEGAETH_CHAIN_ID,
-              chainName: 'MegaETH',
-              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-              rpcUrls: ['https://mainnet.megaeth.com/rpc'],
-              blockExplorerUrls: ['https://megaeth.blockscout.com'],
-            }],
-          });
-        }
-
-        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
-        providerRef.current = provider;
-        addressRef.current = accounts[0];
-        setGameReady(true);
-      } catch (err) {
-        console.error('Wallet init error:', err);
-        setError('Failed to initialize wallet');
-      }
-    };
-
-    init();
   }, [authenticated, walletsReady, wallets]);
 
   const sendShotTx = useCallback(async () => {
-    const provider = await providerRef.current;
-    const from = addressRef.current;
-    if (!provider || !from) return;
+    if (!wallets[0]) return;
 
     try {
-      // Send raw tx via provider - bypasses Privy confirmation UI
-      const hash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [{
-          from,
-          to: BURN_ADDRESS,
-          value: '0x0',
-          data: '0x',
-        }],
-      });
+      const receipt = await sendTransaction(
+        {
+          to: BURN_ADDRESS as `0x${string}`,
+          value: 0,
+          chainId: 4326,
+        },
+        {
+          address: wallets[0].address,
+          uiOptions: { showWalletUIs: false },
+        }
+      );
 
-      setLastTxHash(hash as string);
+      setLastTxHash(receipt.hash);
       setTxCount((c) => c + 1);
       setError(null);
     } catch (err: unknown) {
@@ -97,7 +57,7 @@ export default function GameWrapper() {
       setError(message);
       console.error('Shot TX failed:', err);
     }
-  }, []);
+  }, [wallets, sendTransaction]);
 
   const handleShoot = useCallback(
     (_hit: boolean) => {
