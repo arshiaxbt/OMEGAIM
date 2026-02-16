@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
 import { createPublicClient, http, formatEther, encodeFunctionData } from 'viem';
 import { megaeth } from '@/lib/megaeth';
@@ -25,7 +25,7 @@ export default function GameWrapper() {
   });
   const { wallets, ready: walletsReady } = useWallets();
   const { sendTransaction } = useSendTransaction();
-  const [isPending, setIsPending] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [txCount, setTxCount] = useState(0);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +33,6 @@ export default function GameWrapper() {
   const [balance, setBalance] = useState<bigint>(BigInt(0));
   const [needsFunding, setNeedsFunding] = useState(false);
   const [onChainStats, setOnChainStats] = useState({ totalShots: 0, hits: 0, bestStreak: 0 });
-  const txQueue = useRef<Promise<void>>(Promise.resolve());
 
   // Check balance and load on-chain stats
   useEffect(() => {
@@ -101,7 +100,6 @@ export default function GameWrapper() {
     }
 
     try {
-      // Encode shoot(bool _hit) call
       const data = encodeFunctionData({
         abi: OMEGAAIM_ABI,
         functionName: 'shoot',
@@ -140,18 +138,17 @@ export default function GameWrapper() {
   const handleShoot = useCallback(
     (hit: boolean) => {
       if (!gameReady || needsFunding) return;
-      setIsPending(true);
-      txQueue.current = txQueue.current
-        .then(() => sendShotTx(hit))
-        .finally(() => setIsPending(false));
+      // Fire-and-forget: each shot sends independently
+      setPendingCount((c) => c + 1);
+      sendShotTx(hit).finally(() => setPendingCount((c) => c - 1));
     },
     [gameReady, needsFunding, sendShotTx]
   );
 
   if (!ready) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black">
-        <div className="text-green-400 font-mono text-xl animate-pulse">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#090b0f]">
+        <div className="text-[#3c82ff] font-mono text-xl animate-pulse">
           LOADING OMEGAIM...
         </div>
       </div>
@@ -160,22 +157,22 @@ export default function GameWrapper() {
 
   if (!authenticated) {
     return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center bg-black gap-8">
+      <div className="flex h-screen w-screen flex-col items-center justify-center bg-[#090b0f] gap-8">
         <div className="text-center">
-          <h1 className="text-5xl font-bold text-green-400 font-mono tracking-wider mb-2">
+          <h1 className="text-5xl font-bold text-white font-mono tracking-widest mb-3">
             OMEGAIM
           </h1>
-          <p className="text-green-600 font-mono text-sm">
-            3D AIM TRAINER ON MEGAETH
+          <p className="text-[#3c82ff] font-mono text-sm tracking-wide">
+            AIM TRAINER ON MEGAETH
           </p>
-          <p className="text-gray-500 font-mono text-xs mt-1">
+          <p className="text-[#4a5070] font-mono text-xs mt-2">
             Every shot is a transaction on-chain
           </p>
         </div>
 
         <button
           onClick={() => login({ loginMethods: ['twitter'] })}
-          className="group relative overflow-hidden rounded border border-green-500 bg-black px-8 py-3 font-mono text-green-400 transition-all hover:bg-green-500 hover:text-black"
+          className="group relative overflow-hidden rounded border border-[#3c82ff]/50 bg-transparent px-8 py-3 font-mono text-[#3c82ff] transition-all hover:bg-[#3c82ff] hover:text-[#090b0f] hover:border-[#3c82ff]"
         >
           <span className="relative z-10 flex items-center gap-2">
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -185,11 +182,11 @@ export default function GameWrapper() {
           </span>
         </button>
 
-        <div className="flex items-center gap-4 text-gray-600 font-mono text-xs">
+        <div className="flex items-center gap-4 text-[#3a3e50] font-mono text-xs">
           <span>POWERED BY</span>
-          <span className="text-green-600">MEGAETH</span>
-          <span>+</span>
-          <span className="text-purple-500">PRIVY</span>
+          <span className="text-[#3c82ff]">MEGAETH</span>
+          <span className="text-[#2a2e40]">|</span>
+          <span className="text-[#6a5aaa]">PRIVY</span>
         </div>
       </div>
     );
@@ -197,12 +194,12 @@ export default function GameWrapper() {
 
   if (!gameReady) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-black">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#090b0f]">
         <div className="text-center">
-          <div className="text-green-400 font-mono text-xl animate-pulse mb-4">
+          <div className="text-[#3c82ff] font-mono text-xl animate-pulse mb-4">
             SETTING UP WALLET...
           </div>
-          <p className="text-gray-500 font-mono text-xs">
+          <p className="text-[#4a5070] font-mono text-xs">
             Creating your embedded wallet on MegaETH
           </p>
         </div>
@@ -215,32 +212,33 @@ export default function GameWrapper() {
 
   return (
     <div className="relative">
-      <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between bg-black/60 backdrop-blur px-4 py-2 border-b border-green-900/50">
+      {/* Top bar - minimal */}
+      <div className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between bg-[#090b0f]/70 backdrop-blur-sm px-4 py-2 border-b border-[#1a1e2a]">
         <div className="flex items-center gap-3">
-          <span className="text-green-400 font-mono text-sm font-bold">
+          <span className="text-white font-mono text-sm font-bold tracking-wider">
             OMEGAIM
           </span>
           {twitterHandle && (
-            <span className="text-gray-400 font-mono text-xs">
+            <span className="text-[#4a5070] font-mono text-xs">
               @{twitterHandle}
             </span>
           )}
         </div>
         <div className="flex items-center gap-4">
-          <span className="text-gray-500 font-mono text-xs">
+          <span className="text-[#3c82ff] font-mono text-xs">
             {formatEther(balance).slice(0, 8)} ETH
           </span>
           {onChainStats.totalShots > 0 && (
-            <span className="text-purple-400 font-mono text-xs">
-              ON-CHAIN: {onChainStats.totalShots} shots / {onChainStats.hits} hits / best {onChainStats.bestStreak} streak
+            <span className="text-[#6a5aaa] font-mono text-xs">
+              {onChainStats.totalShots} / {onChainStats.hits} / {onChainStats.bestStreak}
             </span>
           )}
-          <span className="text-green-400 font-mono text-xs">
-            SESSION SHOTS: {txCount}
+          <span className="text-[#4a5070] font-mono text-xs">
+            TXs: {txCount}
           </span>
           <button
             onClick={logout}
-            className="rounded border border-red-800 px-3 py-1 font-mono text-xs text-red-400 hover:bg-red-900/30"
+            className="rounded border border-[#2a1a1a] px-3 py-1 font-mono text-xs text-[#aa4444] hover:bg-[#1a0a0a]"
           >
             LOGOUT
           </button>
@@ -249,36 +247,27 @@ export default function GameWrapper() {
 
       {/* Needs funding overlay */}
       {needsFunding && walletAddress && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90">
-          <div className="max-w-md text-center space-y-4 p-8">
-            <div className="text-red-400 font-mono text-xl">NO GAS</div>
-            <p className="text-gray-400 font-mono text-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#090b0f]/95">
+          <div className="max-w-md text-center space-y-4 p-8 border border-[#1a1e2a] rounded bg-[#0d1017]">
+            <div className="text-[#ff6040] font-mono text-xl">NO GAS</div>
+            <p className="text-[#6a7090] font-mono text-sm">
               You need ETH on MegaETH to play. Send ETH to your wallet:
             </p>
-            <div className="bg-gray-900 border border-gray-700 rounded p-3 break-all">
-              <p className="text-green-400 font-mono text-xs">{walletAddress}</p>
+            <div className="bg-[#090b0f] border border-[#1a1e2a] rounded p-3 break-all">
+              <p className="text-[#3c82ff] font-mono text-xs">{walletAddress}</p>
             </div>
             <button
               onClick={() => navigator.clipboard.writeText(walletAddress)}
-              className="rounded border border-green-500 px-4 py-2 font-mono text-xs text-green-400 hover:bg-green-500 hover:text-black"
+              className="rounded border border-[#3c82ff]/50 px-4 py-2 font-mono text-xs text-[#3c82ff] hover:bg-[#3c82ff] hover:text-[#090b0f] transition-all"
             >
               COPY ADDRESS
             </button>
-            <p className="text-gray-600 font-mono text-xs">
-              Bridge ETH from Ethereum mainnet to MegaETH via{' '}
-              <a
-                href="https://megaeth.blockscout.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-green-600 underline"
-              >
-                bridge
-              </a>
-              {' '}or send from another MegaETH wallet.
+            <p className="text-[#3a3e50] font-mono text-xs">
+              Bridge ETH from Ethereum mainnet to MegaETH or send from another wallet.
             </p>
             <button
               onClick={() => setNeedsFunding(false)}
-              className="text-gray-600 font-mono text-xs underline hover:text-gray-400"
+              className="text-[#4a5070] font-mono text-xs underline hover:text-[#6a7090]"
             >
               DISMISS & PLAY ANYWAY
             </button>
@@ -286,7 +275,7 @@ export default function GameWrapper() {
         </div>
       )}
 
-      {/* Contract address */}
+      {/* Contract link */}
       {CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000' && (
         <div className="fixed bottom-4 left-4 z-40 font-mono text-xs space-y-1">
           <div>
@@ -294,9 +283,9 @@ export default function GameWrapper() {
               href={`https://megaeth.blockscout.com/address/${CONTRACT_ADDRESS}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-purple-600 hover:text-purple-400 underline"
+              className="text-[#2a3050] hover:text-[#3c82ff] transition-colors"
             >
-              CONTRACT: {CONTRACT_ADDRESS.slice(0, 10)}...{CONTRACT_ADDRESS.slice(-6)}
+              {CONTRACT_ADDRESS.slice(0, 8)}...{CONTRACT_ADDRESS.slice(-4)}
             </a>
           </div>
           {lastTxHash && (
@@ -305,9 +294,9 @@ export default function GameWrapper() {
                 href={`https://megaeth.blockscout.com/tx/${lastTxHash}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-green-600 hover:text-green-400 underline"
+                className="text-[#2a3050] hover:text-[#ff8020] transition-colors"
               >
-                LAST TX: {lastTxHash.slice(0, 10)}...{lastTxHash.slice(-6)}
+                tx: {lastTxHash.slice(0, 8)}...{lastTxHash.slice(-4)}
               </a>
             </div>
           )}
@@ -315,19 +304,19 @@ export default function GameWrapper() {
       )}
 
       {error && !needsFunding && (
-        <div className="fixed bottom-12 left-4 z-40 rounded bg-red-900/80 px-3 py-1 font-mono text-xs text-red-300 max-w-md truncate">
+        <div className="fixed bottom-12 left-4 z-40 rounded bg-[#1a0a0a]/80 border border-[#aa4444]/20 px-3 py-1 font-mono text-xs text-[#aa4444] max-w-md truncate">
           {error}
         </div>
       )}
 
-      {isPending && (
-        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded bg-yellow-900/80 px-3 py-2 font-mono text-xs text-yellow-300">
-          <div className="h-2 w-2 animate-pulse rounded-full bg-yellow-400" />
-          TX PENDING ON MEGAETH...
+      {pendingCount > 0 && (
+        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded bg-[#0d1020]/80 border border-[#ff8020]/20 px-3 py-1.5 font-mono text-xs text-[#ff8020]">
+          <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#ff8020]" />
+          {pendingCount} TX{pendingCount > 1 ? 's' : ''}
         </div>
       )}
 
-      <Game onShoot={handleShoot} isPending={isPending} />
+      <Game onShoot={handleShoot} isPending={pendingCount > 0} />
     </div>
   );
 }
