@@ -2,13 +2,12 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { usePrivy, useLogin, useWallets } from '@privy-io/react-auth';
-import { createWalletClient, custom, parseEther } from 'viem';
-import { megaeth } from '@/lib/megaeth';
 import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
 
-const BURN_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
+const BURN_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MEGAETH_CHAIN_ID = '0x10e6'; // 4326
 
 export default function GameWrapper() {
   const { ready, authenticated, logout, user } = usePrivy();
@@ -24,37 +23,73 @@ export default function GameWrapper() {
   const [error, setError] = useState<string | null>(null);
   const [gameReady, setGameReady] = useState(false);
   const txQueue = useRef<Promise<void>>(Promise.resolve());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const providerRef = useRef<any>(null);
+  const addressRef = useRef<string | null>(null);
 
-  // Wait for wallets to be ready before showing game
+  // Initialize provider and switch chain once wallet is ready
   useEffect(() => {
-    if (authenticated && walletsReady && wallets.length > 0) {
-      setGameReady(true);
-    } else {
+    if (!authenticated || !walletsReady || wallets.length === 0) {
       setGameReady(false);
+      return;
     }
+
+    const init = async () => {
+      try {
+        const wallet = wallets[0];
+        const provider = await wallet.getEthereumProvider();
+
+        // Switch to MegaETH chain
+        try {
+          await provider.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: MEGAETH_CHAIN_ID }],
+          });
+        } catch {
+          // Chain not added, add it
+          await provider.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: MEGAETH_CHAIN_ID,
+              chainName: 'MegaETH',
+              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://mainnet.megaeth.com/rpc'],
+              blockExplorerUrls: ['https://megaeth.blockscout.com'],
+            }],
+          });
+        }
+
+        const accounts = await provider.request({ method: 'eth_accounts' }) as string[];
+        providerRef.current = provider;
+        addressRef.current = accounts[0];
+        setGameReady(true);
+      } catch (err) {
+        console.error('Wallet init error:', err);
+        setError('Failed to initialize wallet');
+      }
+    };
+
+    init();
   }, [authenticated, walletsReady, wallets]);
 
   const sendShotTx = useCallback(async () => {
-    const wallet = wallets[0];
-    if (!wallet) return;
+    const provider = await providerRef.current;
+    const from = addressRef.current;
+    if (!provider || !from) return;
 
     try {
-      const provider = await wallet.getEthereumProvider();
-      const walletClient = createWalletClient({
-        chain: megaeth,
-        transport: custom(provider),
+      // Send raw tx via provider - bypasses Privy confirmation UI
+      const hash = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from,
+          to: BURN_ADDRESS,
+          value: '0x0',
+          data: '0x',
+        }],
       });
 
-      const [address] = await walletClient.getAddresses();
-
-      const hash = await walletClient.sendTransaction({
-        account: address,
-        to: BURN_ADDRESS,
-        value: parseEther('0'),
-        chain: megaeth,
-      });
-
-      setLastTxHash(hash);
+      setLastTxHash(hash as string);
       setTxCount((c) => c + 1);
       setError(null);
     } catch (err: unknown) {
@@ -62,7 +97,7 @@ export default function GameWrapper() {
       setError(message);
       console.error('Shot TX failed:', err);
     }
-  }, [wallets]);
+  }, []);
 
   const handleShoot = useCallback(
     (_hit: boolean) => {
@@ -122,7 +157,6 @@ export default function GameWrapper() {
     );
   }
 
-  // Authenticated but wallet not ready yet
   if (!gameReady) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-black">
