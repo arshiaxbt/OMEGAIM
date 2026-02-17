@@ -1,4 +1,4 @@
-export const OMEGAAIM_ABI = [
+export const OMEGAIM_ABI = [
   {
     "anonymous": false,
     "inputs": [

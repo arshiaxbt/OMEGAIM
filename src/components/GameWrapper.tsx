@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { usePrivy, useLogin, useWallets, useSendTransaction } from '@privy-io/react-auth';
 import { createPublicClient, http, formatEther, encodeFunctionData } from 'viem';
 import { megaeth } from '@/lib/megaeth';
-import { OMEGAAIM_ABI } from '@/lib/contract';
+import { OMEGAIM_ABI } from '@/lib/contract';
 import dynamic from 'next/dynamic';
 
 const Game = dynamic(() => import('./Game'), { ssr: false });
@@ -74,7 +74,7 @@ export default function GameWrapper() {
         try {
           const result = await publicClient.readContract({
             address: CONTRACT_ADDRESS,
-            abi: OMEGAAIM_ABI,
+            abi: OMEGAIM_ABI,
             functionName: 'getPlayerStats',
             args: [addr],
           });
@@ -123,7 +123,7 @@ export default function GameWrapper() {
 
     try {
       const data = encodeFunctionData({
-        abi: OMEGAAIM_ABI,
+        abi: OMEGAIM_ABI,
         functionName: 'shoot',
         args: [hit],
       });

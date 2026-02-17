@@ -11,13 +11,18 @@ import {
   COLORS,
 } from './constants';
 
+type MovementType = 'stationary' | 'lateral' | 'erratic';
+
 interface Target {
   id: number;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   alive: boolean;
   hitTime: number;
-  type: 'orange' | 'cyan';
+  spawnTime: number;
+  movementType: MovementType;
+  erraticTimer: number;
+  baseY: number;
 }
 
 export interface TargetsHandle {
@@ -30,21 +35,39 @@ function randomRange(min: number, max: number) {
 }
 
 function createTarget(id: number): Target {
+  const movementTypes: MovementType[] = ['stationary', 'lateral', 'erratic'];
+  const movementType = movementTypes[Math.floor(Math.random() * 3)];
+  const baseY = randomRange(TARGET_ZONE.minY, TARGET_ZONE.maxY);
+
+  let velocity = new THREE.Vector3(0, 0, 0);
+  if (movementType === 'lateral') {
+    velocity = new THREE.Vector3(
+      (Math.random() > 0.5 ? 1 : -1) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX),
+      0,
+      0
+    );
+  } else if (movementType === 'erratic') {
+    velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX),
+      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.4,
+      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.2
+    );
+  }
+
   return {
     id,
     position: new THREE.Vector3(
       randomRange(TARGET_ZONE.minX, TARGET_ZONE.maxX),
-      randomRange(TARGET_ZONE.minY, TARGET_ZONE.maxY),
+      -1.5, // Start below floor for pop-up
       randomRange(TARGET_ZONE.maxZ, TARGET_ZONE.minZ)
     ),
-    velocity: new THREE.Vector3(
-      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX),
-      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.6,
-      (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.3
-    ),
+    velocity,
     alive: true,
     hitTime: 0,
-    type: Math.random() > 0.5 ? 'orange' : 'cyan',
+    spawnTime: Date.now(),
+    movementType,
+    erraticTimer: 0,
+    baseY,
   };
 }
 
@@ -82,7 +105,6 @@ const Targets = forwardRef<TargetsHandle, { started: boolean }>(({ started }, re
   useFrame((_, delta) => {
     if (!started) return;
 
-    // Spawn first wave
     if (targetsRef.current.length === 0) {
       spawnWave();
       return;
@@ -91,7 +113,6 @@ const Targets = forwardRef<TargetsHandle, { started: boolean }>(({ started }, re
     const now = Date.now();
     const aliveCount = targetsRef.current.filter((t) => t.alive).length;
 
-    // Check for wave clear
     if (aliveCount === 0) {
       if (lastWaveClearTime.current === 0) {
         lastWaveClearTime.current = now;
@@ -99,21 +120,47 @@ const Targets = forwardRef<TargetsHandle, { started: boolean }>(({ started }, re
         lastWaveClearTime.current = 0;
         spawnWave();
       }
-      // Don't return — still need to update dead targets for fade
     }
 
-    // Clamp delta to avoid jumps
     const dt = Math.min(delta, 0.05);
 
-    // Update target positions
     for (const t of targetsRef.current) {
       if (!t.alive) continue;
 
+      // Pop-up spawn animation (ease-out cubic, 400ms)
+      const spawnElapsed = now - t.spawnTime;
+      if (spawnElapsed < 400) {
+        const p = spawnElapsed / 400;
+        const ease = 1 - Math.pow(1 - p, 3);
+        t.position.y = -1.5 + (t.baseY + 1.5) * ease;
+        continue; // Don't move during spawn
+      }
+
+      // Erratic: random direction changes
+      if (t.movementType === 'erratic') {
+        t.erraticTimer -= dt;
+        if (t.erraticTimer <= 0) {
+          t.erraticTimer = 0.3 + Math.random() * 0.7;
+          t.velocity.set(
+            (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX),
+            (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.4,
+            (Math.random() - 0.5) * randomRange(TARGET_SPEED_MIN, TARGET_SPEED_MAX) * 0.2
+          );
+        }
+      }
+
+      // Lateral: sine wave overlay
+      if (t.movementType === 'lateral') {
+        t.position.y = t.baseY + Math.sin(now * 0.002 + t.id) * 0.3;
+      }
+
       t.position.x += t.velocity.x * dt;
-      t.position.y += t.velocity.y * dt;
+      if (t.movementType !== 'lateral') {
+        t.position.y += t.velocity.y * dt;
+      }
       t.position.z += t.velocity.z * dt;
 
-      // Bounce off boundaries
+      // Bounce
       if (t.position.x < TARGET_ZONE.minX || t.position.x > TARGET_ZONE.maxX) {
         t.velocity.x *= -1;
         t.position.x = Math.max(TARGET_ZONE.minX, Math.min(TARGET_ZONE.maxX, t.position.x));
@@ -128,25 +175,11 @@ const Targets = forwardRef<TargetsHandle, { started: boolean }>(({ started }, re
       }
     }
 
-    // Update meshes
     if (!groupRef.current) return;
-    const children = groupRef.current.children;
-    const targets = targetsRef.current;
-
-    // Sync group children count
-    while (children.length > targets.length * 2) {
-      groupRef.current.remove(children[children.length - 1]);
-    }
-
-    // Mesh updates handled by TargetMeshes component below
   });
 
-  // We render targets declaratively and update positions in useFrame via refs
   return (
     <group ref={groupRef}>
-      {started &&
-        targetsRef.current.map(() => null) /* rendered below via TargetMeshes */
-      }
       <TargetMeshes targetsRef={targetsRef} started={started} groupRef={groupRef} />
     </group>
   );
@@ -154,7 +187,6 @@ const Targets = forwardRef<TargetsHandle, { started: boolean }>(({ started }, re
 
 Targets.displayName = 'Targets';
 
-// Separate component to render target meshes imperatively for performance
 function TargetMeshes({
   targetsRef,
   started,
@@ -165,25 +197,38 @@ function TargetMeshes({
   groupRef: React.RefObject<THREE.Group>;
 }) {
   const meshesRef = useRef<Map<number, THREE.Group>>(new Map());
-  const materialCache = useRef({
-    orange: new THREE.MeshStandardMaterial({
-      color: COLORS.targetOrange,
-      emissive: COLORS.targetOrange,
-      emissiveIntensity: 1.5,
-      roughness: 0.3,
-      metalness: 0.2,
-    }),
-    cyan: new THREE.MeshStandardMaterial({
-      color: COLORS.targetCyan,
-      emissive: COLORS.targetCyan,
-      emissiveIntensity: 1.5,
-      roughness: 0.3,
-      metalness: 0.2,
-    }),
-  });
 
-  const headGeo = useRef(new THREE.SphereGeometry(0.25, 16, 12));
-  const bodyGeo = useRef(new THREE.CapsuleGeometry(0.2, 0.6, 8, 12));
+  // Geometries
+  const headGeo = useRef(new THREE.SphereGeometry(0.18, 12, 10));
+  const neckGeo = useRef(new THREE.CylinderGeometry(0.06, 0.08, 0.1, 8));
+  const torsoGeo = useRef(new THREE.BoxGeometry(0.4, 0.5, 0.2));
+  const shoulderGeo = useRef(new THREE.BoxGeometry(0.12, 0.12, 0.18));
+  const armGeo = useRef(new THREE.BoxGeometry(0.08, 0.35, 0.08));
+  const pelvisGeo = useRef(new THREE.BoxGeometry(0.3, 0.2, 0.18));
+  const headHitGeo = useRef(new THREE.SphereGeometry(0.22, 8, 8));
+
+  // Materials
+  const bodyMat = useRef(new THREE.MeshStandardMaterial({
+    color: COLORS.targetBody,
+    roughness: 0.7,
+    metalness: 0.1,
+  }));
+  const edgeMat = useRef(new THREE.MeshStandardMaterial({
+    color: COLORS.targetEdge,
+    emissive: COLORS.targetEdge,
+    emissiveIntensity: 0.8,
+    side: THREE.BackSide,
+    roughness: 0.5,
+  }));
+  const hitFlashMat = useRef(new THREE.MeshStandardMaterial({
+    color: COLORS.targetHitFlash,
+    emissive: COLORS.targetHitFlash,
+    emissiveIntensity: 3,
+    roughness: 0.5,
+  }));
+  const invisibleMat = useRef(new THREE.MeshBasicMaterial({
+    visible: false,
+  }));
 
   useFrame(() => {
     if (!started || !groupRef.current) return;
@@ -193,7 +238,6 @@ function TargetMeshes({
     const now = Date.now();
     const parent = groupRef.current;
 
-    // Remove meshes for targets that no longer exist
     const targetIds = new Set(targets.map((t) => t.id));
     meshes.forEach((group, id) => {
       if (!targetIds.has(id)) {
@@ -206,24 +250,70 @@ function TargetMeshes({
       let group = meshes.get(t.id);
 
       if (!group) {
-        // Create target mesh group
         group = new THREE.Group();
         group.userData.targetId = t.id;
         group.userData.alive = t.alive;
 
-        const mat = t.type === 'orange' ? materialCache.current.orange : materialCache.current.cyan;
-
-        // Body (capsule)
-        const body = new THREE.Mesh(bodyGeo.current, mat);
-        body.position.y = 0;
-        body.userData.targetId = t.id;
-        group.add(body);
-
-        // Head (sphere)
-        const head = new THREE.Mesh(headGeo.current, mat);
-        head.position.y = 0.55;
+        // Head
+        const head = new THREE.Mesh(headGeo.current, bodyMat.current);
+        head.position.y = 0.62;
         head.userData.targetId = t.id;
+        head.castShadow = true;
         group.add(head);
+
+        // Head edge glow (BackSide)
+        const headEdge = new THREE.Mesh(headGeo.current, edgeMat.current);
+        headEdge.position.y = 0.62;
+        headEdge.scale.setScalar(1.05);
+        group.add(headEdge);
+
+        // Invisible headshot collision sphere
+        const headHit = new THREE.Mesh(headHitGeo.current, invisibleMat.current);
+        headHit.position.y = 0.62;
+        headHit.userData.targetId = t.id;
+        headHit.userData.isHeadshot = true;
+        group.add(headHit);
+
+        // Neck
+        const neck = new THREE.Mesh(neckGeo.current, bodyMat.current);
+        neck.position.y = 0.48;
+        neck.userData.targetId = t.id;
+        group.add(neck);
+
+        // Torso
+        const torso = new THREE.Mesh(torsoGeo.current, bodyMat.current);
+        torso.position.y = 0.18;
+        torso.userData.targetId = t.id;
+        torso.castShadow = true;
+        group.add(torso);
+
+        // Torso edge glow
+        const torsoEdge = new THREE.Mesh(torsoGeo.current, edgeMat.current);
+        torsoEdge.position.y = 0.18;
+        torsoEdge.scale.set(1.05, 1.03, 1.05);
+        group.add(torsoEdge);
+
+        // Shoulders
+        for (const side of [-1, 1]) {
+          const shoulder = new THREE.Mesh(shoulderGeo.current, bodyMat.current);
+          shoulder.position.set(side * 0.26, 0.38, 0);
+          shoulder.userData.targetId = t.id;
+          group.add(shoulder);
+        }
+
+        // Arms
+        for (const side of [-1, 1]) {
+          const arm = new THREE.Mesh(armGeo.current, bodyMat.current);
+          arm.position.set(side * 0.28, 0.08, 0);
+          arm.userData.targetId = t.id;
+          group.add(arm);
+        }
+
+        // Pelvis
+        const pelvis = new THREE.Mesh(pelvisGeo.current, bodyMat.current);
+        pelvis.position.y = -0.15;
+        pelvis.userData.targetId = t.id;
+        group.add(pelvis);
 
         parent.add(group);
         meshes.set(t.id, group);
@@ -235,14 +325,34 @@ function TargetMeshes({
         group.position.copy(t.position);
         group.visible = true;
         group.scale.setScalar(1);
+        group.rotation.set(0, 0, 0);
+
+        // Reset materials to normal
+        group.children.forEach((child) => {
+          if (child instanceof THREE.Mesh && child.material === hitFlashMat.current) {
+            child.material = bodyMat.current;
+          }
+        });
       } else {
-        // Fade/shrink dead targets
+        // Death animation: flash red, rotate/fall, sink below floor
         const elapsed = now - t.hitTime;
-        if (elapsed < 350) {
-          const p = elapsed / 350;
-          group.scale.setScalar(1 - p);
-          group.position.y = t.position.y + p * 0.5;
+        if (elapsed < 600) {
           group.visible = true;
+          const p = elapsed / 600;
+
+          // Flash red for first 100ms
+          if (elapsed < 100) {
+            group.children.forEach((child) => {
+              if (child instanceof THREE.Mesh && child.material === bodyMat.current) {
+                child.material = hitFlashMat.current;
+              }
+            });
+          }
+
+          // Rotate and fall
+          group.rotation.x = p * 1.5;
+          group.position.y = t.position.y - p * 2;
+          group.scale.setScalar(1 - p * 0.3);
         } else {
           group.visible = false;
         }
